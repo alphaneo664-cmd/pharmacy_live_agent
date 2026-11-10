@@ -1,0 +1,77 @@
+Option Explicit
+
+Dim shell, fso, appDir, logPath, icoPath, psScript, serverCmd
+
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+appDir = fso.GetParentFolderName(WScript.ScriptFullName)
+logPath = fso.BuildPath(appDir, "mom-server.log")
+icoPath = fso.BuildPath(appDir, "favicon.ico")
+
+shell.CurrentDirectory = appDir
+
+' 1. Check if Analyst Server is already running on port 3001
+If Not AppIsReady() Then
+    ' Launch Node production server process silently (using dist/server.cjs which is stable)
+    serverCmd = "cmd.exe /d /c node -e ""process.env.NODE_ENV='production'; require('./dist/server.cjs')"" >> " & Quote(logPath) & " 2>&1"
+    shell.Run serverCmd, 0, False
+
+    ' Wait up to 15 seconds for port 3001 to become ready
+    Dim i, isReady
+    isReady = False
+    For i = 1 To 15
+        WScript.Sleep 1000
+        If AppIsReady() Then
+            isReady = True
+            Exit For
+        End If
+    Next
+End If
+
+' 2. Launch System Tray Icon with Controls (Port 3001)
+psScript = "powershell -NoProfile -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -Command """ & _
+    "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; " & _
+    "[System.Reflection.Assembly]::LoadWithPartialName('System.Drawing') | Out-Null; " & _
+    "$notify = New-Object System.Windows.Forms.NotifyIcon; " & _
+    "if (Test-Path '" & EscPs(icoPath) & "') { $notify.Icon = New-Object System.Drawing.Icon('" & EscPs(icoPath) & "') } else { $notify.Icon = [System.Drawing.SystemIcons]::Application }; " & _
+    "$notify.Visible = $true; " & _
+    "$notify.Text = 'Analyst Server Running (Port 3001)'; " & _
+    "$notify.add_DoubleClick({ [System.Diagnostics.Process]::Start('http://localhost:3001') }); " & _
+    "$contextMenu = New-Object System.Windows.Forms.ContextMenu; " & _
+    "$itemOpen = New-Object System.Windows.Forms.MenuItem('Open Analyst Dashboard'); " & _
+    "$itemOpen.add_Click({ [System.Diagnostics.Process]::Start('http://localhost:3001') }); " & _
+    "$itemExit = New-Object System.Windows.Forms.MenuItem('Exit Agent'); " & _
+    "$itemExit.add_Click({ $notify.Visible = $false; [System.Windows.Forms.Application]::Exit() }); " & _
+    "$contextMenu.MenuItems.Add($itemOpen) | Out-Null; " & _
+    "$contextMenu.MenuItems.Add('-') | Out-Null; " & _
+    "$contextMenu.MenuItems.Add($itemExit) | Out-Null; " & _
+    "$notify.ContextMenu = $contextMenu; " & _
+    "$notify.ShowBalloonTip(3000, 'Analyst Server Active', 'Server is active on http://localhost:3001.', [System.Windows.Forms.ToolTipIcon]::Info); " & _
+    "[System.Windows.Forms.Application]::Run()"""
+
+shell.Run psScript, 0, False
+
+' --- Helper Functions ---
+
+Function AppIsReady()
+    Dim http
+    AppIsReady = False
+    On Error Resume Next
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.SetTimeouts 500, 500, 500, 500
+    http.Open "GET", "http://127.0.0.1:3001/", False
+    http.Send
+    
+    AppIsReady = (Err.Number = 0 And (http.Status = 200 Or http.Status = 304))
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+Function Quote(value)
+    Quote = Chr(34) & value & Chr(34)
+End Function
+
+Function EscPs(value)
+    EscPs = Replace(value, "'", "''")
+End Function
